@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Local data — the directory database lives here, never commit it
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# Secrets / environment
+.env
+.env*.local
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+npm-debug.log*
