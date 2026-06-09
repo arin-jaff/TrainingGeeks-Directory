@@ -1,4 +1,3 @@
-import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { openDb } from "./db.ts";
 import { v1Routes } from "./routes.ts";
@@ -19,11 +18,4 @@ export function createApp(db = openDb()) {
   app.route("/v1", v1Routes(db));
 
   return app;
-}
-
-// Only start a listener when run directly, not when imported by tests.
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
-  const port = Number(process.env.PORT || 4000);
-  serve({ fetch: createApp().fetch, port });
-  console.log(`traininggeeks-directory v${VERSION} listening on :${port}`);
 }
