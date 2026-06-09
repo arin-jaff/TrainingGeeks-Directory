@@ -1,12 +1,13 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { openDb } from "./db.ts";
+import { v1Routes } from "./routes.ts";
 
 export const VERSION = "0.1.0";
 
 /**
  * Build the directory app. The DB is injected so tests can pass an in-memory
- * one. Routes are mounted here as they are implemented (see PLAN.md §Roadmap).
+ * one. See PLAN.md §API for the route surface.
  */
 export function createApp(db = openDb()) {
   const app = new Hono();
@@ -15,8 +16,7 @@ export function createApp(db = openDb()) {
     c.json({ ok: true, service: "traininggeeks-directory", version: VERSION }),
   );
 
-  // Phase 1 routes (register / heartbeat / resolve / friends) mount here.
-  void db;
+  app.route("/v1", v1Routes(db));
 
   return app;
 }
