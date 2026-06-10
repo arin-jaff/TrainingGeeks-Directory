@@ -54,4 +54,21 @@ ALTER TABLE friendship ADD COLUMN requester_scope TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE friendship ADD COLUMN addressee_scope TEXT NOT NULL DEFAULT '[]';
 `,
   },
+  {
+    id: 3,
+    name: "shared_cache",
+    // Owners push the opted-in subset they share, so friends can view them
+    // while their instance is offline. Authorized reads only (friend graph).
+    sql: /* sql */ `
+CREATE TABLE shared_cache (
+  id INTEGER PRIMARY KEY,
+  owner_key TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  payload TEXT NOT NULL,           -- JSON, as the owner's instance produced it
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (owner_key, scope)
+);
+CREATE INDEX idx_shared_cache_owner ON shared_cache (owner_key);
+`,
+  },
 ];

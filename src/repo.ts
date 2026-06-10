@@ -228,3 +228,45 @@ function safeScope(s: string): string[] {
     return [];
   }
 }
+
+// ---- shared cache (offline-viewable subset) ----------------------------
+
+/** Scopes `ownerKey` shares with `friendKey`, or null if they aren't friends. */
+export function sharedScopesBetween(
+  db: DB,
+  ownerKey: string,
+  friendKey: string,
+): string[] | null {
+  const row = db
+    .prepare(
+      `SELECT requester_key, requester_scope, addressee_scope FROM friendship
+        WHERE status = 'accepted'
+          AND ((requester_key = ? AND addressee_key = ?)
+            OR (requester_key = ? AND addressee_key = ?))`,
+    )
+    .get(ownerKey, friendKey, friendKey, ownerKey) as
+    | { requester_key: string; requester_scope: string; addressee_scope: string }
+    | undefined;
+  if (!row) return null;
+  // The owner's grant is requester_scope if the owner made the request.
+  return safeScope(row.requester_key === ownerKey ? row.requester_scope : row.addressee_scope);
+}
+
+export function putCache(db: DB, ownerKey: string, scope: string, payload: string): void {
+  db.prepare(
+    `INSERT INTO shared_cache (owner_key, scope, payload) VALUES (?, ?, ?)
+     ON CONFLICT (owner_key, scope)
+     DO UPDATE SET payload = excluded.payload, updated_at = datetime('now')`,
+  ).run(ownerKey, scope, payload);
+}
+
+export function getCache(
+  db: DB,
+  ownerKey: string,
+  scope: string,
+): { payload: string; updatedAt: string } | null {
+  const row = db
+    .prepare("SELECT payload, updated_at FROM shared_cache WHERE owner_key = ? AND scope = ?")
+    .get(ownerKey, scope) as { payload: string; updated_at: string } | undefined;
+  return row ? { payload: row.payload, updatedAt: row.updated_at } : null;
+}

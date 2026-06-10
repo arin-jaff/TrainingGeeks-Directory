@@ -123,6 +123,37 @@ test("full friend request → accept flow", async () => {
   assert.deepEqual(samFriends[0].sharesWithMe, ["calendar"]);
 });
 
+test("cache: owner pushes, authorized friend reads, others are blocked", async () => {
+  const a = app();
+  const arin = generateKeypair();
+  const sam = generateKeypair();
+  const eve = generateKeypair();
+  await call(a, arin, "POST", "/v1/register", { handle: "arin", url: "https://a.example" });
+  await call(a, sam, "POST", "/v1/register", { handle: "sam", url: "https://s.example" });
+  await call(a, eve, "POST", "/v1/register", { handle: "eve", url: "https://e.example" });
+
+  // Arin shares calendar with Sam; Sam accepts.
+  await call(a, arin, "POST", "/v1/friends/request", { handle: "sam", scope: ["calendar"] });
+  await call(a, sam, "POST", "/v1/friends/respond", { handle: "arin", accept: true, scope: [] });
+
+  // Arin pushes a cached calendar payload.
+  const put = await call(a, arin, "PUT", "/v1/cache/calendar", { payload: { items: [1, 2, 3] } });
+  assert.equal(put.status, 200);
+
+  // Sam (granted calendar) can read it.
+  const ok = await call(a, sam, "GET", "/v1/cache/arin/calendar");
+  assert.equal(ok.status, 200);
+  assert.deepEqual((await readJson(ok)).payload, { items: [1, 2, 3] });
+
+  // Sam was not granted pmc → 403.
+  const wrongScope = await call(a, sam, "GET", "/v1/cache/arin/pmc");
+  assert.equal(wrongScope.status, 403);
+
+  // Eve is not a friend → 403.
+  const stranger = await call(a, eve, "GET", "/v1/cache/arin/calendar");
+  assert.equal(stranger.status, 403);
+});
+
 test("declining leaves no friendship", async () => {
   const a = app();
   const arin = generateKeypair();

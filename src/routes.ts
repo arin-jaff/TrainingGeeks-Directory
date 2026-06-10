@@ -2,12 +2,15 @@ import { Hono } from "hono";
 import type { DB } from "./db.ts";
 import { type AuthVars, jsonBody, requireSignature } from "./auth.ts";
 import {
+  getCache,
   getInstanceByHandle,
   listFriends,
   listPending,
   presenceOf,
+  putCache,
   requestFriend,
   respondFriend,
+  sharedScopesBetween,
   touchInstance,
   upsertInstance,
 } from "./repo.ts";
@@ -99,6 +102,31 @@ export function v1Routes(db: DB) {
     const key = c.get("signerKey");
     const { incoming, outgoing } = listPending(db, key);
     return c.json({ friends: listFriends(db, key), incoming, outgoing });
+  });
+
+  // Owner pushes a cached copy of one shared scope (so offline friends can
+  // still view it). Body: { payload }. Stored verbatim, served to friends only.
+  v1.put("/cache/:scope", (c) => {
+    const body = jsonBody<{ payload?: unknown }>(c.get("rawBody"));
+    if (body.payload === undefined)
+      return c.json({ error: "payload required" }, 400);
+    putCache(db, c.get("signerKey"), c.req.param("scope"), JSON.stringify(body.payload));
+    return c.json({ ok: true });
+  });
+
+  // A friend reads an owner's cached scope (used when the owner is offline).
+  // Authorized against the friend graph + the owner's directional scope.
+  v1.get("/cache/:handle/:scope", (c) => {
+    const callerKey = c.get("signerKey");
+    const owner = getInstanceByHandle(db, c.req.param("handle").toLowerCase());
+    if (!owner) return c.json({ error: "unknown handle" }, 404);
+    const scope = c.req.param("scope");
+    const shared = sharedScopesBetween(db, owner.public_key, callerKey);
+    if (!shared || !shared.includes(scope))
+      return c.json({ error: "not shared with you" }, 403);
+    const cached = getCache(db, owner.public_key, scope);
+    if (!cached) return c.json({ error: "no cached data" }, 404);
+    return c.json({ scope, updatedAt: cached.updatedAt, payload: JSON.parse(cached.payload) });
   });
 
   return v1;
