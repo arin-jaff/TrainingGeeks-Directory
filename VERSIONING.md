@@ -28,7 +28,10 @@ The API is versioned by path prefix: **`/v1/...`**.
   is a mutable alias owned by the first key to claim it (trust on first use).
 - **Endpoints** — `register`, `heartbeat`, `resolve/:handle`,
   `friends/request`, `friends/respond`, `friends`, `cache/:scope` (PUT),
-  `cache/:handle/:scope` (GET), `rotate`, `account` (DELETE).
+  `cache/:handle/:scope` (GET), `rotate`, `account` (DELETE), and the social
+  surface added in 0.2: `social/kudos` (POST), `social/comment` (POST),
+  `social/comment/:id` (DELETE), `social/:handle/:ref` (GET),
+  `social/summary` (POST).
 
 ## Deprecation
 

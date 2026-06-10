@@ -71,4 +71,33 @@ CREATE TABLE shared_cache (
 CREATE INDEX idx_shared_cache_owner ON shared_cache (owner_key);
 `,
   },
+  {
+    id: 4,
+    name: "social",
+    // Kudos and comments on shared activities. They live here (not on the
+    // owner's instance) so reactions survive the owner being offline and need
+    // no extra peer-to-peer surface. activity_ref is an owner-local opaque id
+    // ("<date>:<activityId>"); only the friend graph may read or write.
+    sql: /* sql */ `
+CREATE TABLE reaction (
+  id INTEGER PRIMARY KEY,
+  owner_key TEXT NOT NULL,            -- whose activity it is
+  actor_key TEXT NOT NULL,            -- who gave the kudos
+  activity_ref TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (owner_key, actor_key, activity_ref)
+);
+CREATE INDEX idx_reaction_activity ON reaction (owner_key, activity_ref);
+
+CREATE TABLE comment (
+  id INTEGER PRIMARY KEY,
+  owner_key TEXT NOT NULL,
+  actor_key TEXT NOT NULL,
+  activity_ref TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_comment_activity ON comment (owner_key, activity_ref);
+`,
+  },
 ];

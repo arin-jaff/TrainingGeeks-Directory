@@ -96,6 +96,10 @@ export function rotateKey(
     db.prepare("UPDATE friendship SET requester_key = ? WHERE requester_key = ?").run(newKey, oldKey);
     db.prepare("UPDATE friendship SET addressee_key = ? WHERE addressee_key = ?").run(newKey, oldKey);
     db.prepare("UPDATE shared_cache SET owner_key = ? WHERE owner_key = ?").run(newKey, oldKey);
+    db.prepare("UPDATE reaction SET owner_key = ? WHERE owner_key = ?").run(newKey, oldKey);
+    db.prepare("UPDATE reaction SET actor_key = ? WHERE actor_key = ?").run(newKey, oldKey);
+    db.prepare("UPDATE comment SET owner_key = ? WHERE owner_key = ?").run(newKey, oldKey);
+    db.prepare("UPDATE comment SET actor_key = ? WHERE actor_key = ?").run(newKey, oldKey);
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
@@ -110,6 +114,8 @@ export function deleteAccount(db: DB, key: string): void {
   try {
     db.prepare("DELETE FROM friendship WHERE requester_key = ? OR addressee_key = ?").run(key, key);
     db.prepare("DELETE FROM shared_cache WHERE owner_key = ?").run(key);
+    db.prepare("DELETE FROM reaction WHERE owner_key = ? OR actor_key = ?").run(key, key);
+    db.prepare("DELETE FROM comment WHERE owner_key = ? OR actor_key = ?").run(key, key);
     db.prepare("DELETE FROM instance WHERE public_key = ?").run(key);
     db.exec("COMMIT");
   } catch {
@@ -310,4 +316,161 @@ export function getCache(
     .prepare("SELECT payload, updated_at FROM shared_cache WHERE owner_key = ? AND scope = ?")
     .get(ownerKey, scope) as { payload: string; updated_at: string } | undefined;
   return row ? { payload: row.payload, updatedAt: row.updated_at } : null;
+}
+
+// ---- social (kudos + comments on shared activities) ----------------------
+
+/** Owner-local activity reference, e.g. "2026-06-09:123". Opaque, no slashes. */
+const REF_RE = /^[A-Za-z0-9:._-]{1,64}$/;
+
+export function validRef(ref: unknown): ref is string {
+  return typeof ref === "string" && REF_RE.test(ref);
+}
+
+export const MAX_COMMENT_CHARS = 1000;
+
+/** Accepted friendship between two keys (either direction). */
+export function areFriends(db: DB, a: string, b: string): boolean {
+  return sharedScopesBetween(db, a, b) !== null;
+}
+
+/** Add or remove a kudos (toggle). Returns the new state and total. */
+export function toggleKudos(
+  db: DB,
+  ownerKey: string,
+  actorKey: string,
+  ref: string,
+): { kudosed: boolean; count: number } {
+  const existing = db
+    .prepare(
+      "SELECT id FROM reaction WHERE owner_key = ? AND actor_key = ? AND activity_ref = ?",
+    )
+    .get(ownerKey, actorKey, ref) as { id: number } | undefined;
+  if (existing) {
+    db.prepare("DELETE FROM reaction WHERE id = ?").run(existing.id);
+  } else {
+    db.prepare(
+      "INSERT INTO reaction (owner_key, actor_key, activity_ref) VALUES (?, ?, ?)",
+    ).run(ownerKey, actorKey, ref);
+  }
+  const { n } = db
+    .prepare(
+      "SELECT COUNT(*) AS n FROM reaction WHERE owner_key = ? AND activity_ref = ?",
+    )
+    .get(ownerKey, ref) as { n: number };
+  return { kudosed: !existing, count: n };
+}
+
+export function addComment(
+  db: DB,
+  ownerKey: string,
+  actorKey: string,
+  ref: string,
+  body: string,
+): { ok: true; id: number } | { ok: false; error: string } {
+  const text = body.trim();
+  if (!text) return { ok: false, error: "comment is empty" };
+  if (text.length > MAX_COMMENT_CHARS)
+    return { ok: false, error: `comment too long (max ${MAX_COMMENT_CHARS})` };
+  const info = db
+    .prepare(
+      "INSERT INTO comment (owner_key, actor_key, activity_ref, body) VALUES (?, ?, ?, ?)",
+    )
+    .run(ownerKey, actorKey, ref, text);
+  return { ok: true, id: Number(info.lastInsertRowid) };
+}
+
+/** Delete a comment; allowed for its author or the activity's owner. */
+export function deleteComment(db: DB, id: number, callerKey: string): boolean {
+  const info = db
+    .prepare("DELETE FROM comment WHERE id = ? AND (actor_key = ? OR owner_key = ?)")
+    .run(id, callerKey, callerKey);
+  return info.changes > 0;
+}
+
+export interface ActivitySocial {
+  kudos: { handle: string; displayName: string | null }[];
+  myKudos: boolean;
+  comments: {
+    id: number;
+    handle: string;
+    displayName: string | null;
+    body: string;
+    createdAt: string;
+    mine: boolean;
+  }[];
+}
+
+/** Everything social on one activity, as seen by `viewerKey`. */
+export function activitySocial(
+  db: DB,
+  ownerKey: string,
+  ref: string,
+  viewerKey: string,
+): ActivitySocial {
+  const kudosRows = db
+    .prepare(
+      `SELECT r.actor_key, i.handle, i.display_name FROM reaction r
+         JOIN instance i ON i.public_key = r.actor_key
+        WHERE r.owner_key = ? AND r.activity_ref = ?
+        ORDER BY r.created_at`,
+    )
+    .all(ownerKey, ref) as { actor_key: string; handle: string; display_name: string | null }[];
+  const commentRows = db
+    .prepare(
+      `SELECT c.id, c.actor_key, c.body, c.created_at, i.handle, i.display_name
+         FROM comment c JOIN instance i ON i.public_key = c.actor_key
+        WHERE c.owner_key = ? AND c.activity_ref = ?
+        ORDER BY c.created_at, c.id`,
+    )
+    .all(ownerKey, ref) as {
+    id: number;
+    actor_key: string;
+    body: string;
+    created_at: string;
+    handle: string;
+    display_name: string | null;
+  }[];
+  return {
+    kudos: kudosRows.map((r) => ({ handle: r.handle, displayName: r.display_name })),
+    myKudos: kudosRows.some((r) => r.actor_key === viewerKey),
+    comments: commentRows.map((c) => ({
+      id: c.id,
+      handle: c.handle,
+      displayName: c.display_name,
+      body: c.body,
+      createdAt: c.created_at,
+      mine: c.actor_key === viewerKey,
+    })),
+  };
+}
+
+export interface SocialCounts {
+  kudos: number;
+  comments: number;
+  mine: boolean; // viewer has kudos'd this activity
+}
+
+/** Batch kudos/comment counts for a feed. Unauthorized items return zeros. */
+export function socialCounts(
+  db: DB,
+  items: { ownerKey: string; ref: string }[],
+  viewerKey: string,
+): SocialCounts[] {
+  const kudosStmt = db.prepare(
+    `SELECT COUNT(*) AS n,
+            SUM(CASE WHEN actor_key = ? THEN 1 ELSE 0 END) AS mine
+       FROM reaction WHERE owner_key = ? AND activity_ref = ?`,
+  );
+  const commentStmt = db.prepare(
+    "SELECT COUNT(*) AS n FROM comment WHERE owner_key = ? AND activity_ref = ?",
+  );
+  return items.map(({ ownerKey, ref }) => {
+    const authorized =
+      ownerKey === viewerKey || (validRef(ref) && areFriends(db, ownerKey, viewerKey));
+    if (!authorized) return { kudos: 0, comments: 0, mine: false };
+    const k = kudosStmt.get(viewerKey, ownerKey, ref) as { n: number; mine: number | null };
+    const c = commentStmt.get(ownerKey, ref) as { n: number };
+    return { kudos: k.n, comments: c.n, mine: (k.mine ?? 0) > 0 };
+  });
 }

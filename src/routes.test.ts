@@ -214,3 +214,129 @@ test("declining leaves no friendship", async () => {
   const arinFriends = (await readJson(await call(a, arin, "GET", "/v1/friends"))).friends;
   assert.equal(arinFriends.length, 0);
 });
+
+// ---- social: kudos + comments --------------------------------------------
+
+/** Register three handles; arin and sam become friends, eve stays a stranger. */
+async function socialSetup(a: ReturnType<typeof app>) {
+  const arin = generateKeypair();
+  const sam = generateKeypair();
+  const eve = generateKeypair();
+  await call(a, arin, "POST", "/v1/register", { handle: "arin", url: "https://a.example" });
+  await call(a, sam, "POST", "/v1/register", { handle: "sam", url: "https://s.example" });
+  await call(a, eve, "POST", "/v1/register", { handle: "eve", url: "https://e.example" });
+  await call(a, arin, "POST", "/v1/friends/request", { handle: "sam", scope: ["activities"] });
+  await call(a, sam, "POST", "/v1/friends/respond", { handle: "arin", accept: true, scope: ["activities"] });
+  return { arin, sam, eve };
+}
+
+test("kudos: friend toggles on and off; strangers and self are blocked", async () => {
+  const a = app();
+  const { arin, sam, eve } = await socialSetup(a);
+  const ref = "2026-06-09:42";
+
+  // Sam kudos's Arin's activity.
+  const on = await readJson(await call(a, sam, "POST", "/v1/social/kudos", { handle: "arin", ref }));
+  assert.equal(on.kudosed, true);
+  assert.equal(on.count, 1);
+
+  // Toggling again removes it.
+  const off = await readJson(await call(a, sam, "POST", "/v1/social/kudos", { handle: "arin", ref }));
+  assert.equal(off.kudosed, false);
+  assert.equal(off.count, 0);
+
+  // A stranger is rejected; so is self-kudos.
+  const stranger = await call(a, eve, "POST", "/v1/social/kudos", { handle: "arin", ref });
+  assert.equal(stranger.status, 403);
+  const self = await call(a, arin, "POST", "/v1/social/kudos", { handle: "arin", ref });
+  assert.equal(self.status, 400);
+});
+
+test("comments: friends and the owner post; author or owner deletes", async () => {
+  const a = app();
+  const { arin, sam, eve } = await socialSetup(a);
+  const ref = "2026-06-09:42";
+
+  const c1 = await readJson(
+    await call(a, sam, "POST", "/v1/social/comment", { handle: "arin", ref, body: "Nice run!" }),
+  );
+  assert.equal(c1.ok, true);
+  // The owner can reply on their own activity.
+  const c2 = await call(a, arin, "POST", "/v1/social/comment", { handle: "arin", ref, body: "Thanks!" });
+  assert.equal(c2.status, 200);
+  // A stranger cannot comment.
+  const blocked = await call(a, eve, "POST", "/v1/social/comment", { handle: "arin", ref, body: "hi" });
+  assert.equal(blocked.status, 403);
+  // Empty and oversized bodies are rejected.
+  const empty = await call(a, sam, "POST", "/v1/social/comment", { handle: "arin", ref, body: "  " });
+  assert.equal(empty.status, 400);
+  const huge = await call(a, sam, "POST", "/v1/social/comment", {
+    handle: "arin", ref, body: "x".repeat(1001),
+  });
+  assert.equal(huge.status, 400);
+
+  // The thread is visible to owner and friend, with authorship flags.
+  const thread = await readJson(await call(a, sam, "GET", `/v1/social/arin/${ref}`));
+  assert.equal(thread.comments.length, 2);
+  assert.equal(thread.comments[0].handle, "sam");
+  assert.equal(thread.comments[0].mine, true);
+  assert.equal(thread.comments[1].handle, "arin");
+  assert.equal(thread.comments[1].mine, false);
+
+  // Eve can't read it; Sam can't delete Arin's comment; the owner can delete Sam's.
+  const noRead = await call(a, eve, "GET", `/v1/social/arin/${ref}`);
+  assert.equal(noRead.status, 403);
+  const arinCommentId = thread.comments[1].id;
+  const notYours = await call(a, sam, "DELETE", `/v1/social/comment/${arinCommentId}`);
+  assert.equal(notYours.status, 404);
+  const ownerDeletes = await call(a, arin, "DELETE", `/v1/social/comment/${thread.comments[0].id}`);
+  assert.equal(ownerDeletes.status, 200);
+  const after = await readJson(await call(a, arin, "GET", `/v1/social/arin/${ref}`));
+  assert.equal(after.comments.length, 1);
+});
+
+test("social summary: batch counts with per-item authorization", async () => {
+  const a = app();
+  const { arin, sam, eve } = await socialSetup(a);
+  await call(a, sam, "POST", "/v1/social/kudos", { handle: "arin", ref: "d:1" });
+  await call(a, sam, "POST", "/v1/social/comment", { handle: "arin", ref: "d:1", body: "go" });
+
+  // Sam sees counts (and that the kudos is his); his own activity shows zeros.
+  const res = await readJson(
+    await call(a, sam, "POST", "/v1/social/summary", {
+      items: [
+        { handle: "arin", ref: "d:1" },
+        { handle: "sam", ref: "d:9" },
+        { handle: "nobody", ref: "d:1" },
+      ],
+    }),
+  );
+  assert.deepEqual(res.counts[0], { kudos: 1, comments: 1, mine: true });
+  assert.deepEqual(res.counts[1], { kudos: 0, comments: 0, mine: false });
+  assert.deepEqual(res.counts[2], { kudos: 0, comments: 0, mine: false });
+
+  // The owner sees the same counts, not flagged as theirs.
+  const own = await readJson(
+    await call(a, arin, "POST", "/v1/social/summary", { items: [{ handle: "arin", ref: "d:1" }] }),
+  );
+  assert.deepEqual(own.counts[0], { kudos: 1, comments: 1, mine: false });
+
+  // A stranger gets zeros, not an error (no existence leak).
+  const stranger = await readJson(
+    await call(a, eve, "POST", "/v1/social/summary", { items: [{ handle: "arin", ref: "d:1" }] }),
+  );
+  assert.deepEqual(stranger.counts[0], { kudos: 0, comments: 0, mine: false });
+});
+
+test("deleting an account removes its reactions and comments", async () => {
+  const a = app();
+  const { arin, sam } = await socialSetup(a);
+  await call(a, sam, "POST", "/v1/social/kudos", { handle: "arin", ref: "d:1" });
+  await call(a, sam, "POST", "/v1/social/comment", { handle: "arin", ref: "d:1", body: "hey" });
+
+  await call(a, sam, "DELETE", "/v1/account");
+
+  const thread = await readJson(await call(a, arin, "GET", "/v1/social/arin/d:1"));
+  assert.equal(thread.kudos.length, 0);
+  assert.equal(thread.comments.length, 0);
+});

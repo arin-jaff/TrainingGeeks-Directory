@@ -114,6 +114,10 @@ migrations, CI, docs.
 
 **Phase 3 — Social surface.** Friend activity feed, kudos/comments,
 friends-only leaderboards — all built on the Phase 2 shared-feed primitive.
+*(Done: the directory stores kudos + comments — `/v1/social/*` — keyed by an
+owner-local activity ref, authorized against the friend graph, so reactions
+survive the owner's instance being offline. The feed and leaderboards are
+computed client-side in the app from shared scopes.)*
 
 **Phase 4 — Federation hardening & governance.** Protocol conformance tests for
 forks, key rotation/revocation, abuse controls, rate limiting, and a documented

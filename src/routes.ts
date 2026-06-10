@@ -3,7 +3,11 @@ import type { DB } from "./db.ts";
 import { type AuthVars, jsonBody, requireSignature } from "./auth.ts";
 import { rateLimit } from "./ratelimit.ts";
 import {
+  activitySocial,
+  addComment,
+  areFriends,
   deleteAccount,
+  deleteComment,
   getCache,
   getInstanceByHandle,
   listFriends,
@@ -14,8 +18,11 @@ import {
   respondFriend,
   rotateKey,
   sharedScopesBetween,
+  socialCounts,
+  toggleKudos,
   touchInstance,
   upsertInstance,
+  validRef,
 } from "./repo.ts";
 
 /** Max size of a pushed cache payload (abuse guard). */
@@ -137,6 +144,79 @@ export function v1Routes(db: DB) {
     const cached = getCache(db, owner.public_key, scope);
     if (!cached) return c.json({ error: "no cached data" }, 404);
     return c.json({ scope, updatedAt: cached.updatedAt, payload: JSON.parse(cached.payload) });
+  });
+
+  // ---- social: kudos + comments on shared activities --------------------
+  // The activity itself lives on the owner's instance; reactions live here so
+  // they survive the owner being offline. Writes require an accepted
+  // friendship with the owner; reads allow the owner too.
+
+  // Toggle a kudos on a friend's activity. Body: { handle, ref }.
+  v1.post("/social/kudos", (c) => {
+    const key = c.get("signerKey");
+    const body = jsonBody<{ handle?: string; ref?: unknown }>(c.get("rawBody"));
+    if (!body.handle || !validRef(body.ref))
+      return c.json({ error: "handle and ref are required" }, 400);
+    const owner = getInstanceByHandle(db, body.handle.toLowerCase());
+    if (!owner) return c.json({ error: "unknown handle" }, 404);
+    if (owner.public_key === key)
+      return c.json({ error: "cannot kudos your own activity" }, 400);
+    if (!areFriends(db, owner.public_key, key))
+      return c.json({ error: "not friends" }, 403);
+    return c.json({ ok: true, ...toggleKudos(db, owner.public_key, key, body.ref) });
+  });
+
+  // Comment on an activity. Body: { handle, ref, body }. Owner may comment too.
+  v1.post("/social/comment", (c) => {
+    const key = c.get("signerKey");
+    const body = jsonBody<{ handle?: string; ref?: unknown; body?: string }>(
+      c.get("rawBody"),
+    );
+    if (!body.handle || !validRef(body.ref) || typeof body.body !== "string")
+      return c.json({ error: "handle, ref and body are required" }, 400);
+    const owner = getInstanceByHandle(db, body.handle.toLowerCase());
+    if (!owner) return c.json({ error: "unknown handle" }, 404);
+    if (owner.public_key !== key && !areFriends(db, owner.public_key, key))
+      return c.json({ error: "not friends" }, 403);
+    const res = addComment(db, owner.public_key, key, body.ref, body.body);
+    if (!res.ok) return c.json({ error: res.error }, 400);
+    return c.json({ ok: true, id: res.id });
+  });
+
+  // Delete a comment — allowed for its author or the activity's owner.
+  v1.delete("/social/comment/:id", (c) => {
+    const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id)) return c.json({ error: "bad id" }, 400);
+    if (!deleteComment(db, id, c.get("signerKey")))
+      return c.json({ error: "not found or not yours" }, 404);
+    return c.json({ ok: true });
+  });
+
+  // Everything social on one activity (kudos givers + comment thread).
+  v1.get("/social/:handle/:ref", (c) => {
+    const key = c.get("signerKey");
+    const ref = c.req.param("ref");
+    if (!validRef(ref)) return c.json({ error: "bad ref" }, 400);
+    const owner = getInstanceByHandle(db, c.req.param("handle").toLowerCase());
+    if (!owner) return c.json({ error: "unknown handle" }, 404);
+    if (owner.public_key !== key && !areFriends(db, owner.public_key, key))
+      return c.json({ error: "not friends" }, 403);
+    return c.json(activitySocial(db, owner.public_key, ref, key));
+  });
+
+  // Batch kudos/comment counts for a feed. Body: { items: [{handle, ref}] }.
+  // Unauthorized or unknown items come back as zeros (no existence leak).
+  v1.post("/social/summary", (c) => {
+    const key = c.get("signerKey");
+    const body = jsonBody<{ items?: { handle?: string; ref?: string }[] }>(
+      c.get("rawBody"),
+    );
+    if (!Array.isArray(body.items)) return c.json({ error: "items required" }, 400);
+    const items = body.items.slice(0, 100).map((it) => {
+      const owner = it.handle ? getInstanceByHandle(db, it.handle.toLowerCase()) : undefined;
+      return { ownerKey: owner?.public_key ?? "", ref: validRef(it.ref) ? it.ref : "" };
+    });
+    return c.json({ counts: socialCounts(db, items, key) });
   });
 
   // Rotate this instance's identity key (signed by the current/old key).
