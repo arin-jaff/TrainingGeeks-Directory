@@ -43,4 +43,15 @@ CREATE INDEX idx_friendship_addressee ON friendship (addressee_key, status);
 CREATE INDEX idx_friendship_requester ON friendship (requester_key, status);
 `,
   },
+  {
+    id: 2,
+    name: "directional_scopes",
+    // Sharing is per-direction: each side independently chooses what to share.
+    // requester_scope = what the requester shares; addressee_scope = what the
+    // addressee shares back. The old single `scope` column is left unused.
+    sql: /* sql */ `
+ALTER TABLE friendship ADD COLUMN requester_scope TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE friendship ADD COLUMN addressee_scope TEXT NOT NULL DEFAULT '[]';
+`,
+  },
 ];

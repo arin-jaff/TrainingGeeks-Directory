@@ -101,7 +101,7 @@ export interface FriendshipRow {
   updated_at: string;
 }
 
-/** Create or refresh a friend request from requester → addressee. */
+/** Create or refresh a friend request, recording what the requester shares. */
 export function requestFriend(
   db: DB,
   requesterKey: string,
@@ -111,15 +111,15 @@ export function requestFriend(
   if (requesterKey === addresseeKey)
     return { ok: false, error: "cannot friend yourself" };
   db.prepare(
-    `INSERT INTO friendship (requester_key, addressee_key, status, scope)
+    `INSERT INTO friendship (requester_key, addressee_key, status, requester_scope)
      VALUES (?, ?, 'pending', ?)
      ON CONFLICT (requester_key, addressee_key)
-     DO UPDATE SET status = 'pending', scope = excluded.scope, updated_at = datetime('now')`,
+     DO UPDATE SET status = 'pending', requester_scope = excluded.requester_scope, updated_at = datetime('now')`,
   ).run(requesterKey, addresseeKey, JSON.stringify(scope));
   return { ok: true };
 }
 
-/** Addressee accepts or declines a pending request, setting the granted scope. */
+/** Addressee accepts or declines, recording what the addressee shares back. */
 export function respondFriend(
   db: DB,
   addresseeKey: string,
@@ -134,7 +134,7 @@ export function respondFriend(
     .get(requesterKey, addresseeKey) as FriendshipRow | undefined;
   if (!row) return { ok: false, error: "no such request" };
   db.prepare(
-    "UPDATE friendship SET status = ?, scope = ?, updated_at = datetime('now') WHERE id = ?",
+    "UPDATE friendship SET status = ?, addressee_scope = ?, updated_at = datetime('now') WHERE id = ?",
   ).run(accept ? "accepted" : "declined", JSON.stringify(scope), row.id);
   return { ok: true };
 }
@@ -144,31 +144,41 @@ export interface FriendView {
   publicKey: string;
   url: string;
   displayName: string | null;
-  scope: string[];
+  sharesWithMe: string[]; // what the friend shares with me (I may read this)
+  iShareWith: string[]; // what I share with the friend (they may read this)
   presence: Presence;
 }
 
-/** Accepted friends of `key` (either direction), with their presence + scope. */
+interface FriendRow {
+  requester_key: string;
+  addressee_key: string;
+  requester_scope: string;
+  addressee_scope: string;
+}
+
+/** Accepted friends of `key` (either direction), with directional scopes. */
 export function listFriends(db: DB, key: string, now = Date.now()): FriendView[] {
   const rows = db
     .prepare(
-      `SELECT f.scope,
-              CASE WHEN f.requester_key = ? THEN f.addressee_key ELSE f.requester_key END AS other_key
-         FROM friendship f
-        WHERE f.status = 'accepted' AND (f.requester_key = ? OR f.addressee_key = ?)`,
+      `SELECT requester_key, addressee_key, requester_scope, addressee_scope
+         FROM friendship
+        WHERE status = 'accepted' AND (requester_key = ? OR addressee_key = ?)`,
     )
-    .all(key, key, key) as { scope: string; other_key: string }[];
+    .all(key, key) as unknown as FriendRow[];
 
   const out: FriendView[] = [];
   for (const r of rows) {
-    const inst = getInstanceByKey(db, r.other_key);
+    const meIsRequester = r.requester_key === key;
+    const otherKey = meIsRequester ? r.addressee_key : r.requester_key;
+    const inst = getInstanceByKey(db, otherKey);
     if (!inst) continue;
     out.push({
       handle: inst.handle,
       publicKey: inst.public_key,
       url: inst.url,
       displayName: inst.display_name,
-      scope: safeScope(r.scope),
+      iShareWith: safeScope(meIsRequester ? r.requester_scope : r.addressee_scope),
+      sharesWithMe: safeScope(meIsRequester ? r.addressee_scope : r.requester_scope),
       presence: presenceOf(inst.last_seen, now),
     });
   }
@@ -198,12 +208,12 @@ export function listPending(
 
   const incoming = db
     .prepare(
-      "SELECT scope, requester_key AS other_key FROM friendship WHERE addressee_key = ? AND status = 'pending'",
+      "SELECT requester_scope AS scope, requester_key AS other_key FROM friendship WHERE addressee_key = ? AND status = 'pending'",
     )
     .all(key) as { scope: string; other_key: string }[];
   const outgoing = db
     .prepare(
-      "SELECT scope, addressee_key AS other_key FROM friendship WHERE requester_key = ? AND status = 'pending'",
+      "SELECT requester_scope AS scope, addressee_key AS other_key FROM friendship WHERE requester_key = ? AND status = 'pending'",
     )
     .all(key) as { scope: string; other_key: string }[];
 

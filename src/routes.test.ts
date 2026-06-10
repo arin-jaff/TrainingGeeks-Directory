@@ -109,15 +109,18 @@ test("full friend request → accept flow", async () => {
   });
   assert.equal((await readJson(resp)).status, "accepted");
 
-  // Both now see each other as friends.
+  // Both now see each other as friends, with directional scopes.
   const arinFriends = (await readJson(await call(a, arin, "GET", "/v1/friends"))).friends;
   assert.equal(arinFriends.length, 1);
   assert.equal(arinFriends[0].handle, "sam");
-  assert.deepEqual(arinFriends[0].scope, ["calendar", "pmc"]);
+  assert.deepEqual(arinFriends[0].iShareWith, ["calendar"]); // arin's request scope
+  assert.deepEqual(arinFriends[0].sharesWithMe, ["calendar", "pmc"]); // sam's grant
 
   const samFriends = (await readJson(await call(a, sam, "GET", "/v1/friends"))).friends;
   assert.equal(samFriends.length, 1);
   assert.equal(samFriends[0].handle, "arin");
+  assert.deepEqual(samFriends[0].iShareWith, ["calendar", "pmc"]);
+  assert.deepEqual(samFriends[0].sharesWithMe, ["calendar"]);
 });
 
 test("declining leaves no friendship", async () => {
