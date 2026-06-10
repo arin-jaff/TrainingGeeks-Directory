@@ -24,6 +24,18 @@ function signed(
   };
 }
 
+// CONFORMANCE VECTOR — the on-the-wire canonical string format. Forks and the
+// app MUST produce this exact string, or signatures won't interoperate. Do not
+// change without bumping the protocol version. See CONFORMANCE.md.
+test("canonical string matches the frozen conformance vector", () => {
+  const s = canonicalString("POST", "/v1/register", 1700000000000, '{"handle":"arin"}');
+  assert.equal(
+    s,
+    "POST\n/v1/register\n1700000000000\n" +
+      "fa36b78cd8ea6656079d4c5353632e3f2c02abe436de7c6065afcedb8b539406",
+  );
+});
+
 test("a correctly signed request verifies", () => {
   const s = generateKeypair();
   const now = 1_000_000_000_000;

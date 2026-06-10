@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import type { DB } from "./db.ts";
 import { type AuthVars, jsonBody, requireSignature } from "./auth.ts";
+import { rateLimit } from "./ratelimit.ts";
 import {
+  deleteAccount,
   getCache,
   getInstanceByHandle,
   listFriends,
@@ -10,10 +12,14 @@ import {
   putCache,
   requestFriend,
   respondFriend,
+  rotateKey,
   sharedScopesBetween,
   touchInstance,
   upsertInstance,
 } from "./repo.ts";
+
+/** Max size of a pushed cache payload (abuse guard). */
+const MAX_CACHE_BYTES = 1_000_000;
 
 /** Normalize a requested scope to a clean string array. */
 function asScope(v: unknown): string[] {
@@ -24,6 +30,8 @@ function asScope(v: unknown): string[] {
 /** Mount the signed /v1 coordination API. All routes require a valid signature. */
 export function v1Routes(db: DB) {
   const v1 = new Hono<{ Variables: AuthVars }>();
+  // Cheap IP-based abuse guard before the (more expensive) signature check.
+  v1.use("*", rateLimit({ capacity: 120, refillPerSec: 2 }));
   v1.use("*", requireSignature());
 
   // Register / update this instance.
@@ -107,6 +115,8 @@ export function v1Routes(db: DB) {
   // Owner pushes a cached copy of one shared scope (so offline friends can
   // still view it). Body: { payload }. Stored verbatim, served to friends only.
   v1.put("/cache/:scope", (c) => {
+    if (c.get("rawBody").length > MAX_CACHE_BYTES)
+      return c.json({ error: "payload too large" }, 413);
     const body = jsonBody<{ payload?: unknown }>(c.get("rawBody"));
     if (body.payload === undefined)
       return c.json({ error: "payload required" }, 400);
@@ -127,6 +137,21 @@ export function v1Routes(db: DB) {
     const cached = getCache(db, owner.public_key, scope);
     if (!cached) return c.json({ error: "no cached data" }, 404);
     return c.json({ scope, updatedAt: cached.updatedAt, payload: JSON.parse(cached.payload) });
+  });
+
+  // Rotate this instance's identity key (signed by the current/old key).
+  v1.post("/rotate", (c) => {
+    const body = jsonBody<{ newKey?: string }>(c.get("rawBody"));
+    if (!body.newKey) return c.json({ error: "newKey required" }, 400);
+    const res = rotateKey(db, c.get("signerKey"), body.newKey);
+    if (!res.ok) return c.json({ error: res.error }, 409);
+    return c.json({ ok: true });
+  });
+
+  // Permanently delete this instance and its friendships/cache (signed by it).
+  v1.delete("/account", (c) => {
+    deleteAccount(db, c.get("signerKey"));
+    return c.json({ ok: true });
   });
 
   return v1;

@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { openDb } from "./db.ts";
 import { createApp } from "./server.ts";
 import { canonicalString, generateKeypair, type Signer } from "./crypto.ts";
+import { clearRateLimit } from "./ratelimit.ts";
 
 function app() {
+  clearRateLimit(); // isolate each test from the shared IP bucket
   return createApp(openDb(":memory:"));
 }
 
@@ -152,6 +154,52 @@ test("cache: owner pushes, authorized friend reads, others are blocked", async (
   // Eve is not a friend → 403.
   const stranger = await call(a, eve, "GET", "/v1/cache/arin/calendar");
   assert.equal(stranger.status, 403);
+});
+
+test("key rotation moves the identity across instance, friends, and cache", async () => {
+  const a = app();
+  const arin = generateKeypair();
+  const sam = generateKeypair();
+  const arin2 = generateKeypair(); // arin's new key
+  await call(a, arin, "POST", "/v1/register", { handle: "arin", url: "https://a.example" });
+  await call(a, sam, "POST", "/v1/register", { handle: "sam", url: "https://s.example" });
+  await call(a, arin, "POST", "/v1/friends/request", { handle: "sam", scope: ["calendar"] });
+  await call(a, sam, "POST", "/v1/friends/respond", { handle: "arin", accept: true, scope: [] });
+
+  const rot = await call(a, arin, "POST", "/v1/rotate", { newKey: arin2.publicKey });
+  assert.equal(rot.status, 200);
+
+  // The old key is gone; the new key owns the handle and the friendship.
+  const oldResolve = await call(a, sam, "GET", "/v1/resolve/arin");
+  assert.equal((await readJson(oldResolve)).publicKey, arin2.publicKey);
+  const friends = (await readJson(await call(a, arin2, "GET", "/v1/friends"))).friends;
+  assert.equal(friends.length, 1);
+  assert.equal(friends[0].handle, "sam");
+});
+
+test("account deletion removes the instance", async () => {
+  const a = app();
+  const arin = generateKeypair();
+  await call(a, arin, "POST", "/v1/register", { handle: "arin", url: "https://a.example" });
+  const del = await call(a, arin, "DELETE", "/v1/account");
+  assert.equal(del.status, 200);
+  const gone = await call(a, arin, "GET", "/v1/resolve/arin");
+  assert.equal(gone.status, 404);
+});
+
+test("rate limiting kicks in after the burst capacity", async () => {
+  const a = app();
+  const arin = generateKeypair();
+  await call(a, arin, "POST", "/v1/register", { handle: "arin", url: "https://a.example" });
+  let limited = false;
+  for (let i = 0; i < 130; i++) {
+    const r = await call(a, arin, "GET", "/v1/resolve/arin");
+    if (r.status === 429) {
+      limited = true;
+      break;
+    }
+  }
+  assert.equal(limited, true);
 });
 
 test("declining leaves no friendship", async () => {

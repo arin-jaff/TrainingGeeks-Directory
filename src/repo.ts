@@ -76,6 +76,47 @@ export function upsertInstance(
   return { ok: true, row: getInstanceByKey(db, key)! };
 }
 
+/**
+ * Rotate an instance's identity key. Signed by the OLD key (proving ownership);
+ * the new key is moved across the instance, friendships, and cache atomically.
+ */
+export function rotateKey(
+  db: DB,
+  oldKey: string,
+  newKey: string,
+): { ok: boolean; error?: string } {
+  if (!/^[A-Za-z0-9_-]{20,64}$/.test(newKey))
+    return { ok: false, error: "invalid new key" };
+  if (!getInstanceByKey(db, oldKey)) return { ok: false, error: "not registered" };
+  if (getInstanceByKey(db, newKey)) return { ok: false, error: "new key already in use" };
+
+  db.exec("BEGIN");
+  try {
+    db.prepare("UPDATE instance SET public_key = ? WHERE public_key = ?").run(newKey, oldKey);
+    db.prepare("UPDATE friendship SET requester_key = ? WHERE requester_key = ?").run(newKey, oldKey);
+    db.prepare("UPDATE friendship SET addressee_key = ? WHERE addressee_key = ?").run(newKey, oldKey);
+    db.prepare("UPDATE shared_cache SET owner_key = ? WHERE owner_key = ?").run(newKey, oldKey);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    return { ok: false, error: (e as Error).message };
+  }
+  return { ok: true };
+}
+
+/** Permanently remove an instance and everything referencing it (signed by it). */
+export function deleteAccount(db: DB, key: string): void {
+  db.exec("BEGIN");
+  try {
+    db.prepare("DELETE FROM friendship WHERE requester_key = ? OR addressee_key = ?").run(key, key);
+    db.prepare("DELETE FROM shared_cache WHERE owner_key = ?").run(key);
+    db.prepare("DELETE FROM instance WHERE public_key = ?").run(key);
+    db.exec("COMMIT");
+  } catch {
+    db.exec("ROLLBACK");
+  }
+}
+
 /** Record a heartbeat. Returns the new last_seen, or null if not registered. */
 export function touchInstance(db: DB, key: string): string | null {
   const info = db
