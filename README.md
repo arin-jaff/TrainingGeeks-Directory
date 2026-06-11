@@ -60,11 +60,31 @@ npm test
 The SQLite database is created automatically at `data/directory.db` on first run
 (override with `TG_DIRECTORY_DB`).
 
+## API surface (v1)
+
+All routes are signed with the caller's Ed25519 key (see
+[CONFORMANCE.md](CONFORMANCE.md) for the exact format) and rate-limited.
+
+| Route | Purpose |
+| --- | --- |
+| `POST /v1/register` | Claim/update a handle (key = identity, trust on first use). |
+| `POST /v1/heartbeat` | Presence ping. |
+| `GET /v1/resolve/:handle` | Handle to key, URL, and presence. |
+| `POST /v1/friends/request`, `POST /v1/friends/respond`, `GET /v1/friends` | Friend graph with directional share scopes. |
+| `PUT /v1/cache/:scope`, `GET /v1/cache/:handle/:scope` | Owner-pushed shared-data cache so offline friends stay viewable. |
+| `POST /v1/social/kudos`, `POST /v1/social/comment`, `DELETE /v1/social/comment/:id`, `GET /v1/social/:handle/:ref`, `POST /v1/social/summary` | Kudos + comments on shared activities, authorized against the friend graph. |
+| `POST /v1/rotate`, `DELETE /v1/account` | Key rotation and full account deletion. |
+
+Versioning policy (what is frozen, what may be added) is in
+[VERSIONING.md](VERSIONING.md).
+
 ## Status
 
-**Early.** This repo is initialized with the data model and a runnable skeleton.
-The Phase 1 endpoints (register / heartbeat / resolve / friends) are next — see
-the roadmap in [PLAN.md](PLAN.md).
+**Complete through Phase 4** — registration, presence, the friend graph,
+offline cache, the social surface (kudos/comments), rate limiting, key
+rotation, and conformance vectors are all implemented and tested. See
+[PLAN.md](PLAN.md) for the architecture and [DEPLOYMENT.md](DEPLOYMENT.md) to
+run one (the reference instance lives at `directory.traininggeeks.net`).
 
 ## License
 
